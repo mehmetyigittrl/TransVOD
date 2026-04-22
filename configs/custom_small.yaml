@@ -44,7 +44,7 @@ focal_alpha: 0.25
 
 # --- checkpoints / output ---
 output_dir: exps/custom_small
-resume: ./exps/our_models/COCO_pretrained_model/r50_deformable_detr-checkpoint.pth
+resume: ./exps/r50_deformable_detr-checkpoint.pth
 # coco_pretrain: true strips class_embed.* on load so your N-class head is
 # reinitialized. Backbone, transformer, box-refine heads still transfer.
 coco_pretrain: true
