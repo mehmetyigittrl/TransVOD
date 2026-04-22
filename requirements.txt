@@ -2,3 +2,7 @@ pycocotools
 tqdm
 cython
 scipy
+pyyaml
+mlflow
+psutil
+nvidia-ml-py

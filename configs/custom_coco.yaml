@@ -1,0 +1,72 @@
+# Single-frame Deformable DETR on COCO 2017.
+#
+# Run:
+#   python -u main.py --config configs/custom_coco.yaml
+#   (or hit F5 in VSCode; main.py defaults to this config)
+#
+# Verified on this repo:
+#   eval  -> AP=0.414 / AP50=0.618 on val2017 (matches paper baseline)
+#   train -> loss drops cleanly; ~2:40 per epoch on RTX 5060 at batch_size=2
+#
+# Explicit CLI flags still override anything set here.
+
+# --- dataset ---
+dataset_file: coco
+coco_path: ./data                   # contains train2017/, val2017/, annotations/instances_{train,val}2017.json
+num_classes: 91                     # COCO uses sparse category IDs 1-90; +1 for no-object slot
+
+# --- training schedule ---
+# Defaults reproduce the Deformable DETR single-scale DC5 recipe.
+# For a quick smoke-test use configs/smoke_test_train.yaml instead.
+epochs: 50
+lr: 0.0002
+lr_backbone: 0.00002
+lr_drop_epochs: [40]
+batch_size: 2
+num_workers: 4
+weight_decay: 0.0001
+clip_max_norm: 0.1
+
+# --- model (SingleBaseline / Deformable DETR DC5, single-frame, no video buffer) ---
+backbone: resnet50
+dilation: true
+num_feature_levels: 1
+num_queries: 300
+with_box_refine: false              # must match the pretrained checkpoint's flag (false in shipped R50-DC5 weights)
+two_stage: false
+
+# --- loss coefficients ---
+cls_loss_coef: 2
+bbox_loss_coef: 5
+giou_loss_coef: 2
+focal_alpha: 0.25
+
+# --- checkpoints / output ---
+output_dir: exps/custom_coco
+resume: ./exps/our_models/COCO_pretrained_model/r50_deformable_detr_single_scale_dc5-checkpoint.pth
+# coco_pretrain controls the resume branch in main.py:
+#   true  -> strip class_embed.* on load so the classifier can be reinitialized
+#            (use when your num_classes differs from the checkpoint — e.g. a custom dataset).
+#   false -> load full state_dict including the classifier
+#            (use for plain COCO retraining or pure eval where num_classes matches).
+coco_pretrain: false
+
+# --- misc ---
+device: cuda
+seed: 42
+
+# --- mode ---
+# eval: true  -> run COCO evaluator against val2017 and exit (no training).
+# eval: false -> run the training loop.
+# The checkpoint's class_embed must match num_classes for eval to produce real predictions.
+eval: true
+
+# --- MLflow tracking ---
+mlflow_enabled: true
+mlflow_tracking_uri: http://127.0.0.1:5000
+mlflow_experiment_name: TransVOD
+mlflow_run_name: custom_coco_eval
+mlflow_log_every: 50                # only applies during training
+mlflow_log_checkpoint: false
+mlflow_log_system_metrics: true     # CPU / RAM / GPU util+mem+power via psutil + pynvml
+mlflow_system_metrics_interval: 10.0

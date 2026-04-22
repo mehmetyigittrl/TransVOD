@@ -1,0 +1,65 @@
+# Small-object fine-tune recipe for a ~130k-image custom COCO-format dataset
+# with tiny (5-10 px) labels. Optimized for small-object AP, not throughput.
+#
+#   python -u main.py --config configs/custom_small.yaml
+#
+# Before you run:
+#   1. Set num_classes below to (max category_id in your annotations) + 1.
+#   2. Put your dataset at ./data/{train2017,val2017,annotations}/ (COCO layout).
+#   3. Download the 4-SCALE Deformable DETR R50 COCO checkpoint into
+#      ./exps/our_models/COCO_pretrained_model/r50_deformable_detr-checkpoint.pth
+#      (NOT the DC5 single-scale one; its input_proj won't match num_feature_levels=4).
+#      Source: https://github.com/fundamentalvision/Deformable-DETR (Main Results table).
+#   4. Leave max_iters=2000 for the first sanity run; delete it for the full schedule.
+
+# --- dataset ---
+dataset_file: coco
+coco_path: ./data
+num_classes: 2                      # <-- EDIT: max(category_id) + 1 for your data
+
+# --- training schedule (fine-tune from COCO pretrained) ---
+epochs: 50
+max_iters: 2000                     # remove this line after the baseline passes
+lr: 0.00002
+lr_backbone: 0.000002
+lr_drop_epochs: [40]
+batch_size: 1                       # multi-scale is memory-heavy on 8 GB
+num_workers: 4
+weight_decay: 0.0001
+clip_max_norm: 0.1
+
+# --- model (multi-scale + box refine = the small-object config) ---
+backbone: resnet50
+dilation: false                     # OFF when num_feature_levels > 1 (DC5 is a single-scale trick)
+num_feature_levels: 4               # stride 8 / 16 / 32 / 64 feature maps
+num_queries: 500                    # bump higher only if you routinely see >500 objects per image
+with_box_refine: true               # iterative per-layer box refinement, crucial for tiny boxes
+two_stage: false                    # flip true once a baseline works; costs extra memory
+
+# --- loss coefficients (Deformable DETR recipe; don't tune first) ---
+cls_loss_coef: 2
+bbox_loss_coef: 5
+giou_loss_coef: 2
+focal_alpha: 0.25
+
+# --- checkpoints / output ---
+output_dir: exps/custom_small
+resume: ./exps/our_models/COCO_pretrained_model/r50_deformable_detr-checkpoint.pth
+# coco_pretrain: true strips class_embed.* on load so your N-class head is
+# reinitialized. Backbone, transformer, box-refine heads still transfer.
+coco_pretrain: true
+
+# --- misc ---
+device: cuda
+seed: 42
+eval: false
+
+# --- MLflow tracking ---
+mlflow_enabled: true
+mlflow_tracking_uri: http://127.0.0.1:5000
+mlflow_experiment_name: TransVOD_custom_small
+mlflow_run_name: baseline_multiscale
+mlflow_log_every: 50
+mlflow_log_checkpoint: false
+mlflow_log_system_metrics: true
+mlflow_system_metrics_interval: 10.0

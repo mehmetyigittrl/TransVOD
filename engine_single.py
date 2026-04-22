@@ -17,13 +17,15 @@ from typing import Iterable
 
 import torch
 import util.misc as utils
+from util import mlflow_logger
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher_single import data_prefetcher
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, max_norm: float = 0):
+                    device: torch.device, epoch: int, max_norm: float = 0,
+                    max_iters: int = 0, mlflow_log_every: int = 0):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -32,17 +34,17 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
-    print("------------------------------------------------------!!!!")
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
 
-    for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+    total_iters = len(data_loader) if max_iters <= 0 else min(max_iters, len(data_loader))
+    for step in metric_logger.log_every(range(total_iters), print_freq, header):
 
         outputs = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
- 
+
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = utils.reduce_dict(loss_dict)
         loss_dict_reduced_unscaled = {f'{k}_unscaled': v
@@ -70,6 +72,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
+
+        if (mlflow_log_every > 0 and mlflow_logger.is_enabled()
+                and step % mlflow_log_every == 0):
+            global_step = epoch * total_iters + step
+            mlflow_logger.log_metrics({
+                'train/loss': loss_value,
+                'train/loss_ce': float(loss_dict_reduced.get('loss_ce', 0.0)),
+                'train/loss_bbox': float(loss_dict_reduced.get('loss_bbox', 0.0)),
+                'train/loss_giou': float(loss_dict_reduced.get('loss_giou', 0.0)),
+                'train/class_error': float(loss_dict_reduced.get('class_error', 0.0)),
+                'train/grad_norm': float(grad_total_norm),
+                'train/lr': float(optimizer.param_groups[0]['lr']),
+            }, step=global_step)
 
         samples, targets = prefetcher.next()
     # gather the stats from all processes

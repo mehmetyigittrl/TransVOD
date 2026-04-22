@@ -1,0 +1,58 @@
+# Short fine-tune run on COCO 2017 starting from the shipped R50-DC5 weights.
+# Caps training at max_iters=500 (~1.5 min on RTX 5060) so we produce a
+# checkpoint quickly, then flip eval: true to measure mAP.
+#
+#   python -u main.py --config configs/finetune_coco.yaml
+
+# --- dataset ---
+dataset_file: coco
+coco_path: ./data
+num_classes: 91
+
+# --- training schedule ---
+# Fine-tune LR is 10x lower than scratch (2e-4 -> 2e-5) so pretrained weights
+# aren't destabilized in the first iterations.
+epochs: 1
+max_iters: 500
+lr: 0.00002
+lr_backbone: 0.000002
+lr_drop_epochs: [40]
+batch_size: 2
+num_workers: 4
+weight_decay: 0.0001
+clip_max_norm: 0.1
+
+# --- model (must match the checkpoint) ---
+backbone: resnet50
+dilation: true
+num_feature_levels: 1
+num_queries: 300
+with_box_refine: false
+two_stage: false
+
+# --- loss coefficients ---
+cls_loss_coef: 2
+bbox_loss_coef: 5
+giou_loss_coef: 2
+focal_alpha: 0.25
+
+# --- checkpoints / output ---
+output_dir: exps/finetune_coco
+resume: ./exps/our_models/COCO_pretrained_model/r50_deformable_detr_single_scale_dc5-checkpoint.pth
+# num_classes matches the pretrained checkpoint -> load full state_dict.
+coco_pretrain: false
+
+# --- misc ---
+device: cuda
+seed: 42
+eval: false
+
+# --- MLflow tracking ---
+mlflow_enabled: true
+mlflow_tracking_uri: http://127.0.0.1:5000
+mlflow_experiment_name: TransVOD
+mlflow_run_name: finetune_coco_500iters
+mlflow_log_every: 25                # log per-iter training scalars every N steps
+mlflow_log_checkpoint: false        # set true to also upload the ~400 MB final checkpoint
+mlflow_log_system_metrics: true     # CPU / RAM / GPU util+mem+power via psutil + pynvml
+mlflow_system_metrics_interval: 5.0 # seconds between system-metrics samples

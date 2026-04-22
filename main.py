@@ -23,6 +23,7 @@ import datasets
 import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
 from models import build_model
+from util import mlflow_logger
 
 
 def get_args_parser():
@@ -118,6 +119,11 @@ def get_args_parser():
     parser.add_argument('--coco_pretrain', default=False, action='store_true')
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
+    parser.add_argument('--num_classes', default=31, type=int,
+                        help='number of object classes (max category_id + 1 for COCO)')
+    parser.add_argument('--config', default='configs/custom_coco.yaml', type=str,
+                        help='Path to a YAML or JSON config file. Values override argparse defaults; explicit CLI flags still win. '
+                             'Defaults to configs/custom_coco.yaml so `python main.py` runs with no args.')
 
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
@@ -128,7 +134,28 @@ def get_args_parser():
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
+    parser.add_argument('--max_iters', default=0, type=int,
+                        help='If > 0, cap each training epoch to this many iterations. 0 = full epoch.')
     parser.add_argument('--num_workers', default=0, type=int)
+
+    # MLflow tracking
+    parser.add_argument('--mlflow_enabled', default=False, action='store_true',
+                        help='Enable MLflow logging of params, metrics, and artifacts.')
+    parser.add_argument('--mlflow_tracking_uri', default='http://127.0.0.1:5000', type=str,
+                        help='URI of the MLflow tracking server.')
+    parser.add_argument('--mlflow_experiment_name', default='TransVOD', type=str,
+                        help='MLflow experiment name.')
+    parser.add_argument('--mlflow_run_name', default='', type=str,
+                        help='Optional MLflow run name. Defaults to the output_dir basename.')
+    parser.add_argument('--mlflow_log_every', default=50, type=int,
+                        help='Log per-iteration training loss every N steps.')
+    parser.add_argument('--mlflow_log_checkpoint', default=False, action='store_true',
+                        help='Upload the final checkpoint as an MLflow artifact (expensive, ~400 MB).')
+    parser.add_argument('--mlflow_log_system_metrics', default=False, action='store_true',
+                        help='Enable MLflow system-metrics logging (CPU/RAM/GPU util/mem/power). '
+                             'Requires psutil and pynvml (or nvidia-ml-py).')
+    parser.add_argument('--mlflow_system_metrics_interval', default=10.0, type=float,
+                        help='Seconds between system-metrics samples.')
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
 
     return parser
@@ -136,10 +163,10 @@ def get_args_parser():
 
 def main(args):
     print(args.dataset_file, 11111111)
-    if args.dataset_file == "vid_single":
+    if args.dataset_file in ("vid_single", "coco"):
         from engine_single import evaluate, train_one_epoch
         import util.misc as utils
-        
+
     else:
         from engine_multi import evaluate, train_one_epoch
         import util.misc_multi as utils
@@ -152,6 +179,25 @@ def main(args):
     if args.frozen_weights is not None:
         assert args.masks, "Frozen training is meant for segmentation only"
     print(args)
+
+    # MLflow init happens from rank 0 only. For non-distributed runs this is
+    # the sole process; distributed workers skip all logging calls since
+    # init_mlflow returns False there.
+    if utils.is_main_process():
+        run_name = args.mlflow_run_name or (Path(args.output_dir).name if args.output_dir else None)
+        mlflow_logger.init_mlflow(
+            enabled=args.mlflow_enabled,
+            tracking_uri=args.mlflow_tracking_uri,
+            experiment_name=args.mlflow_experiment_name,
+            run_name=run_name,
+            tags={'dataset_file': args.dataset_file, 'backbone': args.backbone,
+                  'mode': 'eval' if args.eval else 'train'},
+            log_system_metrics=args.mlflow_log_system_metrics,
+            system_metrics_interval=args.mlflow_system_metrics_interval,
+        )
+        mlflow_logger.log_params(vars(args))
+        if args.config:
+            mlflow_logger.log_artifact(args.config, artifact_path='config')
 
 
     # fix the seed for reproducibility
@@ -167,7 +213,8 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
-    dataset_train = build_dataset(image_set='train_joint', args=args)
+    train_image_set = 'train' if args.dataset_file == 'coco' else 'train_joint'
+    dataset_train = build_dataset(image_set=train_image_set, args=args)
     dataset_val = build_dataset(image_set='val', args=args)
 
     if args.distributed:
@@ -240,7 +287,7 @@ def main(args):
         base_ds = get_coco_api_from_dataset(dataset_val)
 
     if args.frozen_weights is not None:
-        checkpoint = torch.load(args.frozen_weights, map_location='cpu')
+        checkpoint = torch.load(args.frozen_weights, map_location='cpu', weights_only=False)
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
@@ -249,7 +296,7 @@ def main(args):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
 
         if args.eval:
             missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
@@ -263,11 +310,15 @@ def main(args):
                         print('k', k)
             else:
                 tmp_dict = checkpoint['model']
-                for name, param in model_without_ddp.named_parameters():
-	                if ('temp' in name):
-	                    param.requires_grad = True
-	                else:
-	                    param.requires_grad = False
+                # Only freeze non-temporal params for the TransVOD multi-frame recipe.
+                # Single-frame models have no `temp.*` params, so this freeze used to
+                # zero requires_grad for the whole model and break training.
+                if args.dataset_file == 'vid_multi':
+                    for name, param in model_without_ddp.named_parameters():
+                        if ('temp' in name):
+                            param.requires_grad = True
+                        else:
+                            param.requires_grad = False
             missing_keys, unexpected_keys = model_without_ddp.load_state_dict(tmp_dict, strict=False)
 
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
@@ -275,56 +326,125 @@ def main(args):
             print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
             print('Unexpected Keys: {}'.format(unexpected_keys))
-    if args.eval:
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir)
-        if args.output_dir:
-            utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
-        return
+    try:
+        if args.eval:
+            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                  data_loader_val, base_ds, device, args.output_dir)
+            if args.output_dir:
+                utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
+            if utils.is_main_process():
+                _log_eval_metrics_to_mlflow(test_stats, step=0)
+            return
 
-    print("Start training")
-    start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            sampler_train.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
-        lr_scheduler.step()
-        print('args.output_dir', args.output_dir)
-        if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
-            # extra checkpoint before LR drop and every 5 epochs
-            # if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 1 == 0:
-            if (epoch + 1) % 1 == 0:
-                checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }, checkpoint_path)
+        print("Start training")
+        start_time = time.time()
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                sampler_train.set_epoch(epoch)
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm,
+                max_iters=args.max_iters, mlflow_log_every=args.mlflow_log_every)
+            lr_scheduler.step()
+            print('args.output_dir', args.output_dir)
+            if args.output_dir:
+                checkpoint_paths = [output_dir / 'checkpoint.pth']
+                # extra checkpoint before LR drop and every 5 epochs
+                # if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % 1 == 0:
+                if (epoch + 1) % 1 == 0:
+                    checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+                for checkpoint_path in checkpoint_paths:
+                    utils.save_on_master({
+                        'model': model_without_ddp.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'lr_scheduler': lr_scheduler.state_dict(),
+                        'epoch': epoch,
+                        'args': args,
+                    }, checkpoint_path)
 
-        #test_stats, coco_evaluator = evaluate(
-         #   model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
-        #)
+            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                         'epoch': epoch,
+                         'n_parameters': n_parameters}
 
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     'epoch': epoch,
-                     'n_parameters': n_parameters}
+            if args.output_dir and utils.is_main_process():
+                with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
 
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            if utils.is_main_process():
+                mlflow_logger.log_metrics(
+                    {f'epoch/{k}': v for k, v in train_stats.items()
+                     if isinstance(v, (int, float))},
+                    step=epoch,
+                )
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print('Training time {}'.format(total_time_str))
+
+        if utils.is_main_process() and args.output_dir:
+            log_txt = output_dir / 'log.txt'
+            if log_txt.exists():
+                mlflow_logger.log_artifact(str(log_txt))
+            if args.mlflow_log_checkpoint:
+                final_ckpt = output_dir / 'checkpoint.pth'
+                if final_ckpt.exists():
+                    mlflow_logger.log_artifact(str(final_ckpt), artifact_path='checkpoints')
+    finally:
+        if utils.is_main_process():
+            mlflow_logger.end_run()
+
+
+def _log_eval_metrics_to_mlflow(test_stats, step):
+    """Flatten COCO evaluator stats and push to MLflow under eval/*."""
+    flat = {}
+    for k, v in test_stats.items():
+        if isinstance(v, (int, float)):
+            flat[f'eval/{k}'] = v
+        elif isinstance(v, (list, tuple)) and k == 'coco_eval_bbox' and len(v) >= 12:
+            # Standard COCO 12-value bbox stats ordering.
+            names = ['AP', 'AP50', 'AP75', 'AP_small', 'AP_medium', 'AP_large',
+                     'AR_1', 'AR_10', 'AR_100', 'AR_small', 'AR_medium', 'AR_large']
+            for name, val in zip(names, v[:12]):
+                flat[f'eval/{name}'] = float(val)
+    mlflow_logger.log_metrics(flat, step=step)
+
+
+def load_config_file(path):
+    import json as _json
+    import os as _os
+    ext = _os.path.splitext(path)[1].lower()
+    with open(path, 'r') as f:
+        if ext in ('.yaml', '.yml'):
+            try:
+                import yaml
+            except ImportError as e:
+                raise ImportError("PyYAML is required for YAML configs. Install with `pip install pyyaml`.") from e
+            data = yaml.safe_load(f)
+        elif ext == '.json':
+            data = _json.load(f)
+        else:
+            raise ValueError(f"Unsupported config extension '{ext}'. Use .yaml, .yml, or .json.")
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file {path} must contain a top-level mapping.")
+    return data
 
 
 if __name__ == '__main__':
+    # Two-pass parsing so file-provided values override argparse defaults
+    # but explicit command-line flags still win.
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument('--config', default='configs/custom_coco.yaml', type=str)
+    pre_args, _remaining = pre_parser.parse_known_args()
+
     parser = argparse.ArgumentParser('Deformable DETR training and evaluation script', parents=[get_args_parser()])
+
+    if pre_args.config:
+        cfg = load_config_file(pre_args.config)
+        valid_dests = {a.dest for a in parser._actions}
+        unknown = [k for k in cfg.keys() if k not in valid_dests]
+        if unknown:
+            raise ValueError(f"Unknown keys in config {pre_args.config}: {unknown}")
+        parser.set_defaults(**cfg)
+
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)

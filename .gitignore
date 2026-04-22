@@ -1,0 +1,46 @@
+# --- datasets (too large for git) ---
+data/
+
+# --- experiment outputs & downloaded checkpoints ---
+exps/
+
+# --- MLflow local state ---
+mlruns/
+mlflow.db
+
+# --- model weights anywhere ---
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- virtualenvs ---
+.venv/
+venv/
+env/
+
+# --- editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# --- logs ---
+*.log
+log.train.*
+log.eval.*
+
+# --- jupyter ---
+.ipynb_checkpoints/

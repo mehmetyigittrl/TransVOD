@@ -1,0 +1,35 @@
+# Smoke-test config: verify the training loop runs end-to-end.
+# Not a production training recipe.
+#   python main.py --config configs/smoke_test_train.yaml
+dataset_file: coco
+coco_path: ./data
+num_classes: 91
+
+epochs: 1
+lr: 0.0002
+lr_backbone: 0.00002
+lr_drop_epochs: [40]
+batch_size: 2
+num_workers: 2
+weight_decay: 0.0001
+clip_max_norm: 0.1
+
+backbone: resnet50
+dilation: true
+num_feature_levels: 1
+num_queries: 300
+with_box_refine: false
+two_stage: false
+
+cls_loss_coef: 2
+bbox_loss_coef: 5
+giou_loss_coef: 2
+focal_alpha: 0.25
+
+output_dir: exps/smoke_test_train
+resume: ./exps/our_models/COCO_pretrained_model/r50_deformable_detr_single_scale_dc5-checkpoint.pth
+coco_pretrain: true
+
+device: cuda
+seed: 42
+eval: false

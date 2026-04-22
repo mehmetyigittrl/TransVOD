@@ -15,8 +15,8 @@
 
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
-
-#include <THC/THCAtomics.cuh>
+// <THC/THCAtomics.cuh> was removed in PyTorch 2.0+.
+// Native CUDA atomicAdd for float/double is sufficient for AT_DISPATCH_FLOATING_TYPES.
 
 #define CUDA_KERNEL_LOOP(i, n)                          \
   for (int i = blockIdx.x * blockDim.x + threadIdx.x;   \
