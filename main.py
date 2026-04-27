@@ -304,10 +304,18 @@ def main(args):
             tmp_dict = model_without_ddp.state_dict().copy()
             if args.coco_pretrain: # singleBaseline
                 for k, v in checkpoint['model'].items():
-                    if ('class_embed' not in k) :
-                        tmp_dict[k] = v 
-                    else:
-                        print('k', k)
+                    if 'class_embed' in k:
+                        print(f"[resume] skipping classifier key {k} (coco_pretrain)")
+                        continue
+                    # Skip any key whose shape disagrees with the current model
+                    # (e.g. query_embed when num_queries differs, input_proj when
+                    # num_feature_levels differs). load_state_dict(strict=False)
+                    # does NOT tolerate shape mismatches on its own.
+                    target = tmp_dict.get(k)
+                    if target is not None and hasattr(target, 'shape') and target.shape != v.shape:
+                        print(f"[resume] skipping {k}: ckpt {tuple(v.shape)} vs model {tuple(target.shape)}")
+                        continue
+                    tmp_dict[k] = v
             else:
                 tmp_dict = checkpoint['model']
                 # Only freeze non-temporal params for the TransVOD multi-frame recipe.

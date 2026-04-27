@@ -1,0 +1,36 @@
+{
+  "metrics": {
+    "epoch": 5,
+    "AP": 0.41390743472333597,
+    "AP50": 0.5912567009611449,
+    "AP75": 0.4483684316052091,
+    "train_loss": 6.5246179484110325,
+    "class_error": 4.329178428649902,
+    "timestamp": 1777141442,
+    "done": true,
+    "training_iteration": 6,
+    "trial_id": "fe61062f",
+    "date": "2026-04-25_21-24-02",
+    "time_this_iter_s": 456.2932884693146,
+    "time_total_s": 2729.3518176078796,
+    "pid": 1051793,
+    "hostname": "pc-9211",
+    "node_ip": "10.20.104.145",
+    "time_since_restore": 2729.3518176078796,
+    "iterations_since_restore": 6,
+    "experiment_tag": "14_bbox_loss_coef=2.1707,clip_max_norm=0.5000,cls_loss_coef=1.0227,dropout=0.0086,focal_alpha=0.3754,giou_loss_coef=3.8702,lr=0.0000,lr_backbone=0.0000,lr_linear_proj_mult=0.0500,num_queries=300,weight_decay=0.0000"
+  },
+  "config": {
+    "lr": 1.1836830641004243e-05,
+    "lr_backbone": 1.3522125361888118e-06,
+    "lr_linear_proj_mult": 0.05,
+    "weight_decay": 1.0274318826835252e-05,
+    "clip_max_norm": 0.5,
+    "dropout": 0.008611168155480504,
+    "num_queries": 300,
+    "cls_loss_coef": 1.0226769225749375,
+    "bbox_loss_coef": 2.170713625546158,
+    "giou_loss_coef": 3.8702410048248117,
+    "focal_alpha": 0.37537194411969765
+  }
+}

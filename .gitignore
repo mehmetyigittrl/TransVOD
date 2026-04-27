@@ -3,7 +3,8 @@ data/
 
 # --- experiment outputs & downloaded checkpoints ---
 exps/
-
+531307120-b85b661c-319c-4de3-96c0-833c5a53c01c.mp4
+ray_results/
 # --- MLflow local state ---
 mlruns/
 mlflow.db

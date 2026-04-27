@@ -15,7 +15,7 @@
 # --- dataset ---
 dataset_file: coco
 coco_path: ./data
-num_classes: 2                      # <-- EDIT: max(category_id) + 1 for your data
+num_classes: 91                      # <-- EDIT: max(category_id) + 1 for your data
 
 # --- training schedule (fine-tune from COCO pretrained) ---
 epochs: 50
@@ -32,7 +32,7 @@ clip_max_norm: 0.1
 backbone: resnet50
 dilation: false                     # OFF when num_feature_levels > 1 (DC5 is a single-scale trick)
 num_feature_levels: 4               # stride 8 / 16 / 32 / 64 feature maps
-num_queries: 500                    # bump higher only if you routinely see >500 objects per image
+num_queries: 300                    # bump higher only if you routinely see >500 objects per image
 with_box_refine: true               # iterative per-layer box refinement, crucial for tiny boxes
 two_stage: false                    # flip true once a baseline works; costs extra memory
 
@@ -44,7 +44,7 @@ focal_alpha: 0.25
 
 # --- checkpoints / output ---
 output_dir: exps/custom_small
-resume: ./exps/r50_deformable_detr-checkpoint.pth
+resume: ./exps/our_models/r50_deformable_detr_plus_iterative_bbox_refinement-checkpoint.pth
 # coco_pretrain: true strips class_embed.* on load so your N-class head is
 # reinitialized. Backbone, transformer, box-refine heads still transfer.
 coco_pretrain: true
