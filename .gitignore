@@ -37,6 +37,7 @@ env/
 *.swp
 *.swo
 .DS_Store
+.claude
 
 # --- logs ---
 *.log
@@ -45,3 +46,4 @@ log.eval.*
 
 # --- jupyter ---
 .ipynb_checkpoints/
+.gitignore
