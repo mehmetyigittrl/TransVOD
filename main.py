@@ -158,6 +158,24 @@ def get_args_parser():
                         help='Seconds between system-metrics samples.')
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
 
+    # Small-object detection augmentation flags (read by datasets/coco.py::build).
+    parser.add_argument('--wider_scales', default=False, action='store_true',
+                        help='Extend RandomResize scales to [832..1024] and max_size to 1600 (B1).')
+    parser.add_argument('--photometric_distort', default=False, action='store_true',
+                        help='Enable photometric color jitter for single-frame training (B5).')
+    parser.add_argument('--mosaic_prob', default=0.0, type=float,
+                        help='Probability of applying 4-image Mosaic per sample (B2). 0 disables.')
+    parser.add_argument('--copy_paste_prob', default=0.0, type=float,
+                        help='Probability of pasting random donor crops onto sample (B3). 0 disables.')
+    parser.add_argument('--mosaic_size', default=640, type=int,
+                        help='Output side length for Mosaic canvas (B2).')
+    parser.add_argument('--oversample_small', default=False, action='store_true',
+                        help='Use WeightedRandomSampler that oversamples small-object images (B4).')
+    parser.add_argument('--oversample_threshold', default=32 * 32, type=int,
+                        help='Annotations with area < this (px^2) flag the image as small-object (B4).')
+    parser.add_argument('--oversample_repeat', default=3.0, type=float,
+                        help='Sampling weight multiplier for flagged small-object images (B4).')
+
     return parser
 
 
@@ -225,7 +243,21 @@ def main(args):
             sampler_train = samplers.DistributedSampler(dataset_train)
             sampler_val = samplers.DistributedSampler(dataset_val, shuffle=False)
     else:
-        sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        # B4: in non-distributed mode, optionally oversample images that
+        # contain at least one small-area annotation. Falls back to plain
+        # RandomSampler when the flag is off or the dataset doesn't have a
+        # COCO-style `coco.anns` accessor.
+        if (getattr(args, 'oversample_small', False)
+                and args.dataset_file == 'coco'
+                and hasattr(dataset_train, 'coco')):
+            from datasets.coco import build_small_object_sampler
+            sampler_train = build_small_object_sampler(
+                dataset_train,
+                threshold=int(args.oversample_threshold),
+                repeat=float(args.oversample_repeat),
+            )
+        else:
+            sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
     batch_sampler_train = torch.utils.data.BatchSampler(
@@ -309,7 +341,8 @@ def main(args):
                         continue
                     # Skip any key whose shape disagrees with the current model
                     # (e.g. query_embed when num_queries differs, input_proj when
-                    # num_feature_levels differs). load_state_dict(strict=False)
+                    # num_feature_levels differs, level_embed/sampling_offsets
+                    # when adding the P2 stride-4 level). load_state_dict(strict=False)
                     # does NOT tolerate shape mismatches on its own.
                     target = tmp_dict.get(k)
                     if target is not None and hasattr(target, 'shape') and target.shape != v.shape:
@@ -317,7 +350,29 @@ def main(args):
                         continue
                     tmp_dict[k] = v
             else:
-                tmp_dict = checkpoint['model']
+                # Even outside coco_pretrain, when num_feature_levels changes
+                # (e.g. C1: 4 -> 5 with P2 added), level_embed / input_proj.* /
+                # sampling_offsets.* / reference_points have shape mismatches.
+                # Drop those keys instead of crashing on load_state_dict.
+                ckpt_dict = checkpoint['model']
+                level_dependent_substrings = (
+                    'level_embed',
+                    'input_proj.',
+                    'sampling_offsets',
+                    'reference_points',
+                )
+                stripped = 0
+                for k, v in ckpt_dict.items():
+                    target = tmp_dict.get(k)
+                    if (target is not None and hasattr(target, 'shape')
+                            and target.shape != v.shape
+                            and any(s in k for s in level_dependent_substrings)):
+                        print(f"[resume] skipping {k}: ckpt {tuple(v.shape)} vs model {tuple(target.shape)} (level-dependent)")
+                        stripped += 1
+                        continue
+                    tmp_dict[k] = v
+                if stripped:
+                    print(f"[resume] dropped {stripped} level-dependent keys due to num_feature_levels change")
                 # Only freeze non-temporal params for the TransVOD multi-frame recipe.
                 # Single-frame models have no `temp.*` params, so this freeze used to
                 # zero requires_grad for the whole model and break training.

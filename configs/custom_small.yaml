@@ -31,10 +31,23 @@ clip_max_norm: 0.1
 # --- model (multi-scale + box refine = the small-object config) ---
 backbone: resnet50
 dilation: false                     # OFF when num_feature_levels > 1 (DC5 is a single-scale trick)
-num_feature_levels: 4               # stride 8 / 16 / 32 / 64 feature maps
+# num_feature_levels: 5 -> P2..P6 (strides 4/8/16/32/64) for best AP_S (~+3..7 mAP_S).
+# Needs ~12+ GB VRAM at COCO-size inputs (target: 5090 / 32 GB). On <=8 GB GPUs,
+# drop to 4 and/or reduce mosaic_size and disable wider_scales.
+num_feature_levels: 5
 num_queries: 10                    # bump higher only if you routinely see >500 objects per image
 with_box_refine: true               # iterative per-layer box refinement, crucial for tiny boxes
 two_stage: true                    # flip true once a baseline works; costs extra memory
+
+# --- small-object augmentation (B1/B2/B3/B4/B5) ---
+wider_scales: true                  # B1: extend RandomResize to [832..1024], max_size 1600
+photometric_distort: true           # B5: HSV-space color jitter on top of HFlip / Resize
+mosaic_prob: 0.5                    # B2: 4-image Mosaic
+copy_paste_prob: 0.3                # B3: paste random donor instances
+mosaic_size: 640                    # B2: canvas size before final RandomResize
+oversample_small: true              # B4: WeightedRandomSampler favouring images with small boxes
+oversample_threshold: 1024          # 32^2 px area threshold (matches COCO AP_S definition)
+oversample_repeat: 3.0              # weight multiplier for flagged images
 
 # --- loss coefficients (Deformable DETR recipe; don't tune first) ---
 cls_loss_coef: 2
