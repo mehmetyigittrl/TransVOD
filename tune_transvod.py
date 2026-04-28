@@ -56,10 +56,12 @@ from models import build_model
 PROJECT_ROOT = Path(__file__).resolve().parent
 BASE_CONFIG = PROJECT_ROOT / "configs" / "custom_small.yaml"
 RAY_RESULTS_DIR = PROJECT_ROOT / "ray_results"
-TUNE_EPOCHS = 6                 # epochs per trial during tuning
-TUNE_MAX_ITERS = 400            # iters per epoch during tuning (small for speed)
-NUM_SAMPLES = 16                # number of trial configs to draw
-GRACE_PERIOD = 2                # ASHA: min epochs before a trial can be killed
+# "No time limit" preset: thorough exploration on a single RTX 50xx-class GPU.
+# Worst-case ~11 days; with ASHA pruning typically 3-4 days end-to-end.
+TUNE_EPOCHS = 12                # epochs per trial during tuning
+TUNE_MAX_ITERS = 1500           # iters per epoch (~6 min/epoch on RTX 5060)
+NUM_SAMPLES = 200               # number of trial configs Optuna will draw
+GRACE_PERIOD = 3                # ASHA: min epochs before a trial can be killed
 GPUS_PER_TRIAL = 1
 CPUS_PER_TRIAL = 4
 
@@ -281,21 +283,29 @@ def train_trial(tune_config):
 
 
 def build_search_space():
-    """Search space focused on the levers that move small-object AP for
-    Deformable-DETR fine-tunes. Keep this list short -- every extra dim
-    costs trials."""
+    """Wide-budget search space for small-object Deformable-DETR fine-tunes.
+
+    Architectural dims (num_feature_levels, dec/enc_n_points, backbone) are
+    intentionally fixed -- changing them invalidates the pretrained-checkpoint
+    transfer for a large fraction of weights and rarely pays back in tuning.
+    """
     return {
-        "lr": tune.loguniform(5e-6, 1e-4),
-        "lr_backbone": tune.loguniform(5e-7, 1e-5),
-        "lr_linear_proj_mult": tune.choice([0.05, 0.1, 0.2]),
-        "weight_decay": tune.loguniform(1e-5, 5e-4),
-        "clip_max_norm": tune.choice([0.1, 0.5, 1.0]),
-        "dropout": tune.uniform(0.0, 0.2),
-        "num_queries": tune.choice([100, 300, 500]),
-        "cls_loss_coef": tune.uniform(1.0, 4.0),
-        "bbox_loss_coef": tune.uniform(2.0, 8.0),
-        "giou_loss_coef": tune.uniform(1.0, 4.0),
-        "focal_alpha": tune.uniform(0.15, 0.5),
+        # Optimizer
+        "lr":                 tune.loguniform(2e-6, 3e-4),
+        "lr_backbone":        tune.loguniform(2e-7, 5e-5),
+        "lr_linear_proj_mult": tune.choice([0.05, 0.1, 0.2, 0.5]),
+        "weight_decay":       tune.loguniform(1e-6, 1e-3),
+        "clip_max_norm":      tune.choice([0.1, 0.5, 1.0, 2.0]),
+        # Regularization
+        "dropout":            tune.uniform(0.0, 0.3),
+        # Capacity / set size (sparse small-object dataset, 2-3 obj/image typical)
+        "num_queries":        tune.choice([30, 50, 100]),
+        # Loss weights -- bbox_loss_coef widened upward because small boxes
+        # often need a stronger L1 signal to localize correctly.
+        "cls_loss_coef":      tune.uniform(0.5, 5.0),
+        "bbox_loss_coef":     tune.uniform(3.0, 12.0),
+        "giou_loss_coef":     tune.uniform(1.0, 5.0),
+        "focal_alpha":        tune.uniform(0.15, 0.5),
     }
 
 
