@@ -17,9 +17,22 @@ from torch.autograd.function import once_differentiable
 
 import MultiScaleDeformableAttention as MSDA
 
+# AMP-safety: the CUDA kernel only has an fp32 path. Force inputs to fp32 when
+# called inside torch.amp.autocast. The decorators are no-ops outside autocast.
+try:
+    from torch.amp import custom_fwd, custom_bwd
+    _AMP_FWD = custom_fwd(device_type='cuda', cast_inputs=torch.float32)
+    _AMP_BWD = custom_bwd(device_type='cuda')
+except Exception:
+    from torch.cuda.amp import custom_fwd as _legacy_custom_fwd
+    from torch.cuda.amp import custom_bwd as _legacy_custom_bwd
+    _AMP_FWD = _legacy_custom_fwd(cast_inputs=torch.float32)
+    _AMP_BWD = _legacy_custom_bwd
+
 
 class MSDeformAttnFunction(Function):
     @staticmethod
+    @_AMP_FWD
     def forward(ctx, value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights, im2col_step):
         ctx.im2col_step = im2col_step
         output = MSDA.ms_deform_attn_forward(
@@ -28,6 +41,7 @@ class MSDeformAttnFunction(Function):
         return output
 
     @staticmethod
+    @_AMP_BWD
     @once_differentiable
     def backward(ctx, grad_output):
         value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights = ctx.saved_tensors

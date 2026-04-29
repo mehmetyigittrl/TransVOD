@@ -176,6 +176,17 @@ def get_args_parser():
     parser.add_argument('--oversample_repeat', default=3.0, type=float,
                         help='Sampling weight multiplier for flagged small-object images (B4).')
 
+    # Memory-saving flags (needed for batch_size>=2 with num_feature_levels=5).
+    parser.add_argument('--amp', default=False, action='store_true',
+                        help='Mixed-precision training via torch.amp.autocast + GradScaler. '
+                             'Halves activation memory; MSDeformAttn auto-casts back to fp32.')
+    parser.add_argument('--amp_dtype', default='float16', type=str,
+                        choices=['float16', 'bfloat16'],
+                        help='AMP dtype. bfloat16 is more numerically stable, only on Ampere+.')
+    parser.add_argument('--grad_checkpointing', default=False, action='store_true',
+                        help='Activation checkpointing on transformer encoder/decoder layers. '
+                             'Saves ~50% activation memory at ~30% compute cost.')
+
     return parser
 
 
@@ -307,6 +318,11 @@ def main(args):
     print(args.lr_drop_epochs)
     lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, args.lr_drop_epochs)
 
+    # AMP scaler. fp16 path needs a scaler; bf16 does not (range similar to fp32).
+    amp_dtype = torch.bfloat16 if getattr(args, 'amp_dtype', 'float16') == 'bfloat16' else torch.float16
+    amp_enabled = bool(getattr(args, 'amp', False)) and torch.cuda.is_available()
+    scaler = torch.amp.GradScaler('cuda', enabled=(amp_enabled and amp_dtype == torch.float16))
+
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
@@ -406,7 +422,8 @@ def main(args):
                 sampler_train.set_epoch(epoch)
             train_stats = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm,
-                max_iters=args.max_iters, mlflow_log_every=args.mlflow_log_every)
+                max_iters=args.max_iters, mlflow_log_every=args.mlflow_log_every,
+                scaler=scaler, amp_enabled=amp_enabled, amp_dtype=amp_dtype)
             lr_scheduler.step()
             print('args.output_dir', args.output_dir)
             if args.output_dir:

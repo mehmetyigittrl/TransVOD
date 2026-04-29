@@ -234,6 +234,9 @@ class DeformableTransformerEncoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
+        # Opt-in via build_deforamble_transformer when args.grad_checkpointing.
+        # Trades ~30% extra compute for halving encoder activation memory.
+        self.use_checkpoint = False
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
@@ -253,8 +256,15 @@ class DeformableTransformerEncoder(nn.Module):
     def forward(self, src, spatial_shapes, level_start_index, valid_ratios, pos=None, padding_mask=None):
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
+        use_ckpt = self.use_checkpoint and self.training and torch.is_grad_enabled()
         for _, layer in enumerate(self.layers):
-            output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+            if use_ckpt:
+                from torch.utils.checkpoint import checkpoint
+                output = checkpoint(layer, output, pos, reference_points,
+                                    spatial_shapes, level_start_index, padding_mask,
+                                    use_reentrant=False)
+            else:
+                output = layer(output, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
 
         return output
 
@@ -375,6 +385,7 @@ class DeformableTransformerDecoder(nn.Module):
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.bbox_embed = None
         self.class_embed = None
+        self.use_checkpoint = False
 
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
                 query_pos=None, src_padding_mask=None):
@@ -382,6 +393,7 @@ class DeformableTransformerDecoder(nn.Module):
 
         intermediate = []
         intermediate_reference_points = []
+        use_ckpt = self.use_checkpoint and self.training and torch.is_grad_enabled()
         for lid, layer in enumerate(self.layers):
             if reference_points.shape[-1] == 4:
                 reference_points_input = reference_points[:, :, None] \
@@ -389,7 +401,13 @@ class DeformableTransformerDecoder(nn.Module):
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
-            output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
+            if use_ckpt:
+                from torch.utils.checkpoint import checkpoint
+                output = checkpoint(layer, output, query_pos, reference_points_input,
+                                    src, src_spatial_shapes, src_level_start_index, src_padding_mask,
+                                    use_reentrant=False)
+            else:
+                output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
 
             # hack implementation for iterative bounding box refinement
             if self.bbox_embed is not None:

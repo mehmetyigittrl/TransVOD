@@ -449,6 +449,12 @@ def build(args):
     backbone = build_backbone(args)
 
     transformer = build_deforamble_transformer(args)
+    # Opt-in gradient checkpointing for the encoder/decoder layer stacks.
+    # Halves their activation memory at ~30% extra compute per checkpointed
+    # layer; needed for batch_size>=2 with num_feature_levels=5 even on 32 GB.
+    if getattr(args, 'grad_checkpointing', False):
+        transformer.encoder.use_checkpoint = True
+        transformer.decoder.use_checkpoint = True
     model = DeformableDETR(
         backbone,
         transformer,
