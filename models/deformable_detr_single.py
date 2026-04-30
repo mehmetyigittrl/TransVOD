@@ -409,7 +409,11 @@ class PostProcess(nn.Module):
         assert target_sizes.shape[1] == 2
 
         prob = out_logits.sigmoid()
-        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
+        # k must not exceed the flat (num_queries * num_classes) score grid;
+        # original DETR hardcoded 100 (300*91 >> 100), but small-class /
+        # low-num_queries setups (e.g. 10 queries * 2 classes = 20) trip it.
+        k = min(100, out_logits.shape[1] * out_logits.shape[2])
+        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), k, dim=1)
         scores = topk_values
         topk_boxes = topk_indexes // out_logits.shape[2]
         labels = topk_indexes % out_logits.shape[2]
